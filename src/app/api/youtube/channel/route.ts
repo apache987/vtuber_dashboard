@@ -91,24 +91,25 @@ const fetchChannelsFromSupabase = async (
     throw new Error(error.message);
   }
 
-  const items = (data ?? [])
-    .map((row: ChannelStatsRow) => {
-      const channel = row.channels;
-      if (!channel?.id) return null;
-      if (channel.title?.includes("切り抜き")) return null;
+  const rows: ChannelStatsRow[] = (data ?? []) as unknown as ChannelStatsRow[];
+  const items: Channel[] = [];
 
-      return {
-        id: channel.id,
-        title: channel.title ?? channel.id,
-        channelUrl: buildChannelUrl(channel),
-        customUrl: channel.custom_url ?? undefined,
-        thumbnailUrl: channel.thumbnail_url ?? undefined,
-        subscriberCount: row.subscriber_count ?? undefined,
-        viewCount: row.view_count ?? undefined,
-        videoCount: row.video_count ?? undefined,
-      };
-    })
-    .filter((item): item is Channel => item !== null);
+  for (const row of rows) {
+    const channel = row.channels;
+    if (!channel?.id) continue;
+    if (channel.title?.includes("切り抜き")) continue;
+
+    items.push({
+      id: channel.id,
+      title: channel.title ?? channel.id,
+      channelUrl: buildChannelUrl(channel),
+      customUrl: channel.custom_url ?? undefined,
+      thumbnailUrl: channel.thumbnail_url ?? undefined,
+      subscriberCount: row.subscriber_count ?? undefined,
+      viewCount: row.view_count ?? undefined,
+      videoCount: row.video_count ?? undefined,
+    });
+  }
 
   return items;
 };
