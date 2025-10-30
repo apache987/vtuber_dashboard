@@ -71,24 +71,6 @@ export default function Home() {
     }
   }, []);
 
-  const refreshChannels = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/youtube/channel", { method: "POST" });
-      const json: ChannelApiResponse & { refreshed?: number } = await res.json();
-      if (!res.ok) throw new Error(json?.error || "Failed to refresh data");
-      const items = Array.isArray(json?.items) ? json.items : [];
-      setAllItems(items);
-      setPage(1);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      setError(message);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     void fetchChannels();
   }, [fetchChannels]);
@@ -324,9 +306,6 @@ export default function Home() {
       </p>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 16, alignItems: "center" }}>
-        <button type="button" onClick={refreshChannels} disabled={loading} style={{ padding: "10px 16px" }}>
-          {loading ? "取得中..." : "最新のデータを取得"}
-        </button>
         <button type="button" onClick={openFilterDialog} style={{ padding: "10px 16px" }}>
           登録者数フィルターを変更
         </button>
