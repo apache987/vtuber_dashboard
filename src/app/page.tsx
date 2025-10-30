@@ -1,7 +1,6 @@
 "use client";
 
-import { log } from "console";
-import { useCallback, useEffect, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 type Channel = {
   id: string;
@@ -10,19 +9,20 @@ type Channel = {
   customUrl?: string;
   thumbnailUrl?: string;
   subscriberCount?: number;
+  viewCount?: number;
+  videoCount?: number;
 };
 
 type ChannelApiResponse = {
   items?: Channel[];
   total?: number;
-  page?: number;
-  pageSize?: number;
   error?: string;
 };
 
 const MAX_ALLOWED_SUBSCRIBERS = 10_000;
 const DEFAULT_MIN_SUBSCRIBERS = 0;
-const PAGE_SIZE = 30;
+const DEFAULT_PAGE_SIZE = 30;
+const PAGE_SIZE_OPTIONS = [12, 30, 60, 90];
 
 const getChannelUrl = (channel: Channel) => {
   if (channel.channelUrl) return channel.channelUrl;
@@ -38,78 +38,93 @@ const getChannelUrl = (channel: Channel) => {
   return undefined;
 };
 
+type ViewMode = "table" | "grid";
+
 export default function Home() {
   const [loading, setLoading] = useState(false);
-  const [data, setData] = useState<Channel[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [allItems, setAllItems] = useState<Channel[]>([]);
+
   const [minSubscribers, setMinSubscribers] = useState(DEFAULT_MIN_SUBSCRIBERS);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
+  const [viewMode, setViewMode] = useState<ViewMode>("table");
+
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [draftMin, setDraftMin] = useState<string>(String(DEFAULT_MIN_SUBSCRIBERS));
   const [dialogError, setDialogError] = useState<string | null>(null);
-
-  const applyResponse = useCallback((json: ChannelApiResponse | undefined, requestedPage: number) => {
-    const items: Channel[] = Array.isArray(json?.items) ? json.items : [];
-    const nextTotal =
-      typeof json?.total === "number" && Number.isFinite(json.total) ? Number(json.total) : items.length;
-    const remotePage =
-      typeof json?.page === "number" && Number.isFinite(json.page) && json.page > 0 ? Math.floor(json.page) : requestedPage;
-    const maxPage = Math.max(1, Math.ceil(nextTotal / PAGE_SIZE));
-    const normalizedPage = Math.min(maxPage, Math.max(1, remotePage));
-
-    setData(items);
-    setTotal(nextTotal);
-    setPage((current) => (current === normalizedPage ? current : normalizedPage));
-  }, []);
-
-  const fetchChannels = useCallback(
-    async (min: number, pageNumber: number) => {
-      setLoading(true);
-      setError(null);
-      setData([]);
-      try {
-        const params = new URLSearchParams();
-        params.set("minSubscribers", String(min));
-        params.set("maxSubscribers", String(MAX_ALLOWED_SUBSCRIBERS));
-        params.set("page", String(pageNumber));
-        const res = await fetch(`/api/youtube/channel?${params.toString()}`);
-        const json = await res.json();
-        if (!res.ok) throw new Error(json?.error || "Failed to fetch data");
-        applyResponse(json, pageNumber);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Unknown error";
-        setError(message);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [applyResponse]
-  );
-
-  const refreshChannels = useCallback(async () => {
+  const fetchChannels = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams();
-      params.set("minSubscribers", String(minSubscribers));
-      params.set("maxSubscribers", String(MAX_ALLOWED_SUBSCRIBERS));
-      params.set("page", String(page));
-      const res = await fetch(`/api/youtube/channel?${params.toString()}`, { method: "POST" });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "Failed to refresh data");
-      applyResponse(json, page);
+      const res = await fetch("/api/youtube/channel");
+      const json: ChannelApiResponse = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Failed to fetch data");
+      const items = Array.isArray(json?.items) ? json.items : [];
+      setAllItems(items);
+      setPage(1);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       setError(message);
     } finally {
       setLoading(false);
     }
-  }, [applyResponse, minSubscribers, page]);
+  }, []);
+
+  const refreshChannels = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/youtube/channel", { method: "POST" });
+      const json: ChannelApiResponse & { refreshed?: number } = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Failed to refresh data");
+      const items = Array.isArray(json?.items) ? json.items : [];
+      setAllItems(items);
+      setPage(1);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    void fetchChannels(minSubscribers, page);
-  }, [fetchChannels, minSubscribers, page]);
+    void fetchChannels();
+  }, [fetchChannels]);
+
+  const filteredItems = useMemo(() => {
+    return allItems.filter((item) => {
+      if (typeof item.subscriberCount !== "number") return true;
+      return item.subscriberCount >= minSubscribers && item.subscriberCount <= MAX_ALLOWED_SUBSCRIBERS;
+    });
+  }, [allItems, minSubscribers]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [minSubscribers, pageSize]);
+
+  const totalFiltered = filteredItems.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
+
+  const pagedItems = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredItems.slice(start, start + pageSize);
+  }, [filteredItems, page, pageSize]);
+
+  const displayedCount = pagedItems.length;
+
+  const scrollToTop = useCallback(() => {
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }, []);
 
   const openFilterDialog = () => {
     setDraftMin(String(minSubscribers));
@@ -134,14 +149,169 @@ export default function Home() {
     }
 
     setMinSubscribers(Math.floor(parsedMin));
-    setPage(1);
     setIsDialogOpen(false);
   };
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const isFirstPage = page <= 1;
-  const isLastPage = page >= totalPages;
-  const displayedCount = data.length;
+  const handlePrevPage = () => {
+    setPage((prev) => {
+      const nextPage = Math.max(1, prev - 1);
+      if (nextPage !== prev) scrollToTop();
+      return nextPage;
+    });
+  };
+
+  const handleNextPage = () => {
+    setPage((prev) => {
+      const nextPage = Math.min(totalPages, prev + 1);
+      if (nextPage !== prev) scrollToTop();
+      return nextPage;
+    });
+  };
+
+  const handlePageSizeChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    const value = Number(event.target.value);
+    if (Number.isFinite(value) && value > 0) {
+      setPageSize(Math.floor(value));
+    }
+  };
+
+  const renderTable = () => (
+    <div
+      style={{
+        border: "1px solid #ddd",
+        borderRadius: 8,
+        overflow: "hidden",
+        maxHeight: 520,
+      }}
+    >
+      <div style={{ overflowY: "auto", maxHeight: 520 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead
+            style={{
+              position: "sticky",
+              top: 0,
+              background: "#fff",
+              color: "#000",
+              zIndex: 1,
+            }}
+          >
+            <tr>
+              <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 8 }}>チャンネル名</th>
+              <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 8, width: 160 }}>サムネイル</th>
+              <th style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: 8, width: 100 }}>登録者数</th>
+              <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 8 }}>チャンネルURL</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pagedItems.length === 0 && !loading ? (
+              <tr>
+                <td colSpan={4} style={{ padding: 16, textAlign: "center", color: "#555" }}>
+                  該当するチャンネルがありません。
+                </td>
+              </tr>
+            ) : (
+              pagedItems.map((channel) => {
+                const url = getChannelUrl(channel);
+                return (
+                  <tr key={channel.id}>
+                    <td style={{ borderBottom: "1px solid #eee", padding: 8 }}>
+                      {channel.title}
+                      {channel.customUrl ? (
+                        <>
+                          <br />
+                          <small style={{ color: "#555" }}>{channel.customUrl}</small>
+                        </>
+                      ) : null}
+                    </td>
+                    <td style={{ borderBottom: "1px solid #eee", padding: 8 }}>
+                      {channel.thumbnailUrl ? (
+                        <img src={channel.thumbnailUrl} alt={channel.title} width={60} height={60} />
+                      ) : (
+                        "-"
+                      )}
+                    </td>
+                    <td style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>
+                      {channel.subscriberCount?.toLocaleString?.() ?? "-"}
+                    </td>
+                    <td style={{ borderBottom: "1px solid #eee", padding: 8 }}>
+                      {url ? (
+                        <a href={url} target="_blank" rel="noopener noreferrer">
+                          {url}
+                        </a>
+                      ) : (
+                        "-"
+                      )}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  const renderGrid = () => (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+        gap: 16,
+        padding: 8,
+      }}
+    >
+      {pagedItems.length === 0 && !loading ? (
+        <p style={{ gridColumn: "1 / -1", textAlign: "center", color: "#555" }}>該当するチャンネルがありません。</p>
+      ) : (
+        pagedItems.map((channel) => {
+          const url = getChannelUrl(channel);
+          return (
+            <div
+              key={channel.id}
+              style={{
+                border: "1px solid #ddd",
+                borderRadius: 8,
+                padding: 12,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                textAlign: "center",
+                gap: 8,
+              }}
+            >
+              {channel.thumbnailUrl ? (
+                <img src={channel.thumbnailUrl} alt={channel.title} width={120} height={120} style={{ objectFit: "cover", borderRadius: 8 }} />
+              ) : (
+                <div
+                  style={{
+                    width: 120,
+                    height: 120,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "#f3f3f3",
+                    color: "#999",
+                    borderRadius: 8,
+                  }}
+                >
+                  No Image
+                </div>
+              )}
+              <div>
+                <strong>{channel.title}</strong>
+              </div>
+              {url ? (
+                <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: "#0070f3" }}>
+                  {url}
+                </a>
+              ) : null}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
 
   return (
     <main style={{ maxWidth: 1100, margin: "40px auto", padding: 16 }}>
@@ -153,13 +323,36 @@ export default function Home() {
         表示条件: 登録者数 {minSubscribers.toLocaleString()}人 〜 {MAX_ALLOWED_SUBSCRIBERS.toLocaleString()}人
       </p>
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 16, alignItems: "center" }}>
         <button type="button" onClick={refreshChannels} disabled={loading} style={{ padding: "10px 16px" }}>
           {loading ? "取得中..." : "最新のデータを取得"}
         </button>
         <button type="button" onClick={openFilterDialog} style={{ padding: "10px 16px" }}>
           登録者数フィルターを変更
         </button>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          表示形式:
+          <select
+            value={viewMode}
+            onChange={(event) => setViewMode(event.target.value as ViewMode)}
+            style={{ padding: "6px 10px" }}
+          >
+            <option value="table">テーブル</option>
+            <option value="grid">グリッド</option>
+          </select>
+        </label>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          1ページに表示する件数:
+          <select value={pageSize} onChange={handlePageSizeChange} style={{ padding: "6px 10px" }}>
+            {PAGE_SIZE_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {error && (
@@ -170,96 +363,21 @@ export default function Home() {
 
       <div style={{ marginTop: 24 }}>
         <h2>チャンネル一覧</h2>
-        <div
-          style={{
-            border: "1px solid #ddd",
-            borderRadius: 8,
-            overflow: "hidden",
-            maxHeight: 520,
-          }}
-        >
-          <div style={{ overflowY: "auto", maxHeight: 520 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead
-                style={{
-                  position: "sticky",
-                  top: 0,
-                  background: "#fff",
-                  color: "#000",
-                  zIndex: 1,
-                }}
-              >
-                <tr>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 8 }}>チャンネル名</th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 8, width: 160 }}>サムネイル</th>
-                  <th style={{ textAlign: "right", borderBottom: "1px solid #ddd", padding: 8, width: 90 }}>登録者数</th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: 8 }}>チャンネルURL</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.length === 0 && !loading ? (
-                  <tr>
-                    <td colSpan={4} style={{ padding: 16, textAlign: "center", color: "#555" }}>
-                      該当するチャンネルがありません。
-                    </td>
-                  </tr>
-                ) : (
-                  data.map((channel) => {
-                    const url = getChannelUrl(channel);
-                    return (
-                      <tr key={channel.id}>
-                        <td style={{ borderBottom: "1px solid #eee", padding: 8 }}>
-                          {channel.title}
-                          {channel.customUrl ? (
-                            <>
-                              <br />
-                              <small style={{ color: "#555" }}>{channel.customUrl}</small>
-                            </>
-                          ) : null}
-                        </td>
-                        <td style={{ borderBottom: "1px solid #eee", padding: 8 }}>
-                          {channel.thumbnailUrl ? (
-                            <img src={channel.thumbnailUrl} alt={channel.title} width={60} height={60} />
-                          ) : (
-                            "-"
-                          )}
-                        </td>
-                        <td style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>
-                          {channel.subscriberCount?.toLocaleString?.() ?? "-"}
-                        </td>
-                        <td style={{ borderBottom: "1px solid #eee", padding: 8 }}>
-                          {url ? (
-                            <a href={url} target="_blank" rel="noopener noreferrer">
-                              {url}
-                            </a>
-                          ) : (
-                            "-"
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+        {viewMode === "table" ? renderTable() : renderGrid()}
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, flexWrap: "wrap", gap: 8 }}>
+          <div style={{ display: "flex", gap: 12 }}>
+            <button type="button" onClick={handlePrevPage} disabled={page <= 1 || loading} style={{ padding: "8px 14px" }}>
+              前のページ
+            </button>
+            <button type="button" onClick={handleNextPage} disabled={page >= totalPages || loading} style={{ padding: "8px 14px" }}>
+              次のページ
+            </button>
           </div>
+          <p style={{ textAlign: "right", color: "#555", margin: 0 }}>
+            ページ {page} / {totalPages}（表示 {displayedCount.toLocaleString()} 件 / フィルター後 {totalFiltered.toLocaleString()} 件 / 全 {allItems.length.toLocaleString()} 件）
+          </p>
         </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 12 }}>
-          <button type="button" onClick={() => setPage((prev) => Math.max(1, prev - 1))} disabled={isFirstPage || loading} style={{ padding: "8px 14px" }}>
-            前のページ
-          </button>
-          <button
-            type="button"
-            onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
-            disabled={isLastPage || loading}
-            style={{ padding: "8px 14px" }}
-          >
-            次のページ
-          </button>
-        </div>
-        <p style={{ textAlign: "right", color: "#555" }}>
-          ページ {page} / {totalPages}（表示 {displayedCount.toLocaleString()} 件 / 全 {total.toLocaleString()} 件）
-        </p>
       </div>
 
       {isDialogOpen && (
@@ -291,8 +409,8 @@ export default function Home() {
                   type="number"
                   min={0}
                   value={draftMin}
-                  onChange={(e) => {
-                    setDraftMin(e.target.value);
+                  onChange={(event) => {
+                    setDraftMin(event.target.value);
                     setDialogError(null);
                   }}
                   style={{ marginTop: 4, padding: 8, fontSize: 16 }}
